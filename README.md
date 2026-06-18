@@ -262,7 +262,8 @@ Before treating this as a reproducible public guide:
 - **Hovatek Forum** — Previous Unisoc bootloader and AVB research
 - **Cubot** — For shipping a device that appears to be unlockable (intentionally or not)
 - **Kimi AI** — Troubleshooting, reconstruction, and corrections
-- **Original Tester:** Miguel
+- **Original Tester:** m3t4l|>unx
+
 
 ---
 
