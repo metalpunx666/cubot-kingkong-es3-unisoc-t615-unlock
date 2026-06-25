@@ -1,288 +1,838 @@
-> **Status:** ✅ Verified by Community (1 device)
-# cubot-kingkong-es3-unisoc-t615-unlock
-Bootloader unlock &amp; Magisk root for Cubot KingKong ES 3 (Unisoc T615 / UMS9230_6h10). Experimental lab report — EMMC, A/B slots, BROM/FDL method. Not a guaranteed beginner guide.
-# Cubot KingKong ES 3 — Unisoc T615 Bootloader Unlock & Magisk Root
+# Cubot KingKong ES 3 — Unisoc T615 Bootloader Unlock & Root
 
-> **Experimental Lab Report** | Unisoc T615 / UMS9230_6h10 | EMMC | A/B Partitioning  
-> **Status:** Successfully Unlocked & Rooted | **Confidence:** High (see §10)  
-> **Build:** `CUBOT_KINGKONG_ES_3_F071_V16_20260309`  
-> **Host Environment:** macOS Monterey + Kali Linux (Raspberry Pi 4)
+> **Verified Working Guide** | Unisoc T615 / UMS9230_6h10 | UFS | A/B Partitioning
+> **Status:** Bootloader unlocked, FDL2 access confirmed, Magisk root confirmed
+> **Build:** `CUBOT_KINGKONG_ES_3_F071_V16_20260309`
+> **Host Environment:** Kali Linux / Raspberry Pi 4 recommended
+> **Verified:** 2026-06-23 / 2026-06-24 by live testing
 
 ---
 
 ## ⚠️ Warnings & Disclaimer
 
-- **This is an experimental lab report, not a guaranteed reproducible guide.**
-- The exact minimal unlock sequence is **not fully proven**; the documented path represents a successful experimental run.
-- **EMMC device:** Do not flash UFS-specific firmware files without verification. Filename mismatches exist in stock firmware packages.
-- Erasing `splloader` carries real brick risk. Ensure you have a working BROM recovery path and stock firmware backups before attempting.
-- Fastboot unlock commands (`oem unlock` / `flashing unlock`) are **not implemented** on this device. Do not attempt standard Android unlock workflows.
-- **A/B slots:** All boot-critical partitions must be flashed to both slots or you risk slot-mismatch bootloops.
+* **This guide will wipe your data.** Flashing `misc-wipe.bin` triggers a factory reset to remove old Android encryption keys.
+* **BROM access is your safety net.** As long as you can still enter BROM mode, you may be able to recover from many soft-brick situations.
+* **Fastboot unlock commands are not implemented on this device.** Commands like `fastboot flashing unlock` or `fastboot oem unlock` may return `unknown cmd` or fail.
+* **A/B slots:** This device uses A/B partitioning. Be aware of the active slot before flashing boot-critical partitions, or you may run into slot-mismatch boot issues.
+* **Use the correct firmware files.** Using FDL files, bootloader files, or partition images from another device can brick your phone.
+* **Use Linux for critical BROM/FDL work.** macOS libusb behavior can be unstable with Unisoc BROM mode.
+
+No warranty is provided. You are responsible for any damage, data loss, boot failure, or device brick.
 
 ---
 
-## 1. Device Profile
+## Table of Contents
 
-| Field | Observed Value |
-|-------|----------------|
-| Device | Cubot KingKong ES 3 |
-| SoC | Unisoc T615 / UMS9230_6h10 |
-| Build Number | `CUBOT_KINGKONG_ES_3_F071_V16_20260309` |
-| Storage | **EMMC** *(correction: stock firmware contains UFS-named files, but the device uses EMMC)* |
-| Partition Layout | A/B |
-| Magisk Target | `init_boot.img` *(not `boot-gki.img`)* |
-| OEM Unlocking | Must be manually enabled in Developer Options first |
-
----
-
-## 2. Tools & Files Required
-
-### 2.1 Tools
-- `spd_dump` — [TomKing062/spreadtrum_flash](https://github.com/TomKing062/spreadtrum_flash)
-- `gen_spl-unlock` — [TomKing062/CVE-2022-38694_unlock_bootloader](https://github.com/TomKing062/CVE-2022-38694_unlock_bootloader)
-- `chsize` — from the same unlock tooling set
-- `pacextractor` — for extracting stock `.pac` firmware
-- Magisk app (v30.x+) — for patching `init_boot.img`
-
-### 2.2 Unisoc / UMS9230 Specific Files
-- `fdl1-dl.bin`
-- `fdl2-dl.bin`
-- `fdl2-cboot.bin`
-- `spl-unlock.bin`
-- `misc-wipe.bin`
-- `custom_exec_no_verify_65015f08.bin`
-- `splloader.bin` *(patched — see §6.4)*
-- `uboot_bak.bin` *(patched)*
-
-### 2.3 Stock Firmware Files (from `.pac`)
-- `lk-sign.bin`
-- `vbmeta-sign.img`
-- `init_boot.img`
-- `boot-gki.img`
-- `u-boot-spl-16k-ufs-sign.bin` *(filename implies UFS, but EMMC equivalent must be verified)*
+* [Device Profile](#device-profile)
+* [Compatibility](#compatibility)
+* [What You Need](#what-you-need)
+* [Critical Discovery](#critical-discovery)
+* [Step-by-Step: FDL2 Access](#step-by-step-fdl2-access)
+* [Step-by-Step: Bootloader Unlock](#step-by-step-bootloader-unlock)
+* [Step-by-Step: Magisk Root](#step-by-step-magisk-root)
+* [Step-by-Step: NetHunter Install](#step-by-step-nethunter-install)
+* [The WiFi Reality](#the-wifi-reality)
+* [Troubleshooting](#troubleshooting)
+* [Files Reference](#files-reference)
+* [Verified Working Commands](#verified-working-commands)
+* [Changelog](#changelog)
+* [Credits](#credits)
 
 ---
 
-## 3. What Does **Not** Work
+## Device Profile
 
-Do not waste time on these methods on this device/build:
+| Field                      | Observed Value                          |
+| -------------------------- | --------------------------------------- |
+| Device                     | Cubot KingKong ES 3                     |
+| SoC                        | Unisoc T615 / UMS9230_6h10              |
+| Build Number               | `CUBOT_KINGKONG_ES_3_F071_V16_20260309` |
+| Storage                    | **UFS**                                 |
+| Partition Layout           | A/B slots                               |
+| BROM                       | SPRD3                                   |
+| Boot Key                   | Volume Down while plugging USB          |
+| Magisk Target              | `boot.img` / `boot_a`                   |
+| NetHunter Status           | Installable                             |
+| Built-in WiFi Monitor Mode | Not supported                           |
 
-| Method | Result |
-|--------|--------|
-| `fastboot flashing unlock` / `fastboot oem unlock` | `unknown cmd` / `not implemented` |
-| `gen_spl-unlock` against `lk-sign.bin` | Detects pattern but output size mismatch; `lk-sign.bin` is not the correct patch target for this SoC |
-| Patching `vbmeta` flags while bootloader is **locked** | Bootloader still enforces verification chain; modified `init_boot` rejected |
-| Patching `boot-gki.img` with Magisk | Wrong target on this device; use `init_boot.img` instead |
+This device was initially assumed to be EMMC during early research, but live testing confirmed it uses **UFS** storage.
 
 ---
 
-## 4. Unlock Process (Experimental)
+## Compatibility
 
-**Critical honesty:** The exact clean minimal sequence is not fully proven. The likely unlock event occurred when `spl-unlock.bin` executed, even though the device immediately disconnected and appeared to brick.
+### Verified Working
 
-### 4.1 Enter BROM & Load FDL Chain
+* Cubot KingKong ES 3
+* Unisoc T615 / UMS9230_6h10
+* SPRD3 BROM
+* UFS storage
+* A/B partitioning
+
+### Likely Similar
+
+These may use similar patterns, but are not fully verified in this guide:
+
+* Unisoc T615 devices
+* Unisoc T606 / UMS9230 variants
+* Unisoc T616 / UMS9230 variants
+* Other SPRD3 / UMS9230 devices
+
+### Not Covered
+
+* MediaTek devices
+* Qualcomm devices
+* Samsung Exynos devices
+* Unisoc T610 / T618 devices
+* Unisoc T700 / T770 devices
+* Devices with patched BROM
+* Devices with different FDL load addresses
+
+### Basic Compatibility Check
+
+Power off the phone, hold **Volume Down**, and plug in USB.
+
+On Linux:
 
 ```bash
-./spd_dump --wait 300   exec_addr 0x65015f08   fdl fdl1-dl.bin 0x65000800   fdl fdl2-dl.bin 0x9efffe00   exec
+lsusb | grep "1782:4d00"
 ```
 
-> **Note:** Early attempts showed `exec_addr` failures. This was resolved by using a **patched `splloader.bin`** and patched `uboot_bak.bin` to enable the execution path. If `exec_addr` fails on your attempt, verify your `splloader` is patched or try the `custom_exec_no_verify_65015f08.bin` path.
+If BROM mode is active, you may see:
 
-### 4.2 Backup Bootloader Partitions
-
-```bash
-r splloader
-r uboot
+```text
+Spreadtrum Communications Inc.
+1782:4d00
 ```
 
-Create backups before any destructive operations. These are your recovery path.
+If `CHECK_BAUD` returns `SPRD3` and `CMD_CONNECT` works with `spd_dump`, the device is likely compatible with this method.
 
-### 4.3 Erase SPL Loaders
+---
+
+## What You Need
+
+### Hardware
+
+* Cubot KingKong ES 3 or compatible Unisoc UMS9230 device
+* USB-C cable
+* Linux machine
+* Kali Linux recommended
+* Optional USB-C OTG adapter
+* Optional external USB WiFi adapter for NetHunter monitor mode / injection
+
+### Required Files
+
+Place all unlock files in:
+
+```text
+~/cubot_unlock/
+```
+
+Required files:
+
+```text
+custom_exec_no_verify_65015f08.bin
+fdl1-dl.bin
+fdl2-dl.bin
+splloader.bin
+misc-wipe.bin
+spd_dump
+```
+
+Optional or backup files:
+
+```text
+uboot.bin
+uboot_bak.bin
+splloader_og.bin
+boot_a.bin
+boot_b.bin
+vendor_boot_a.bin
+dtb_a.bin
+```
+
+### Tools
+
+* `spd_dump`
+* `adb`
+* `git`
+* `make`
+* Magisk app
+* NetHunter app
+
+---
+
+## Get FDL Files
+
+The safest source is your device's own stock firmware PAC file.
+
+Extract:
+
+```text
+fdl1-dl.bin
+fdl2-dl.bin
+```
+
+These may appear in firmware packages under names such as:
+
+```text
+fdl1.bin
+fdl2.bin
+splloader.bin
+uboot.bin
+```
+
+Do not blindly use FDL files from another device. That is an excellent way to turn a phone into a very expensive rectangle.
+
+---
+
+## Build `spd_dump`
+
+Clone the tool source:
 
 ```bash
-e splloader
-e splloader_bak
+git clone https://github.com/TomKing062/spreadtrum_flash.git
+```
+
+Enter the folder:
+
+```bash
+cd spreadtrum_flash
+```
+
+Build it:
+
+```bash
+make
+```
+
+Create the unlock folder:
+
+```bash
+mkdir -p ~/cubot_unlock
+```
+
+Copy `spd_dump`:
+
+```bash
+cp spd_dump ~/cubot_unlock/
+```
+
+Make it executable:
+
+```bash
+chmod +x ~/cubot_unlock/spd_dump
+```
+
+---
+
+## Prepare Unlock Folder
+
+Go to the unlock folder:
+
+```bash
+cd ~/cubot_unlock
+```
+
+Expected example:
+
+```text
+~/cubot_unlock/
+├── custom_exec_no_verify_65015f08.bin
+├── fdl1-dl.bin
+├── fdl2-dl.bin
+├── misc-wipe.bin
+├── spd_dump
+└── splloader.bin
+```
+
+---
+
+## Critical Discovery
+
+After repeated failed attempts with `exec_addr` and `exec_addr2`, the clean working exploit delivery method for this device was verified as:
+
+```text
+loadexec custom_exec_no_verify_65015f08.bin
+```
+
+The filename matters.
+
+The payload must be named exactly:
+
+```text
+custom_exec_no_verify_65015f08.bin
+```
+
+The address is parsed from the filename:
+
+```text
+65015f08
+```
+
+Manual `exec_addr` and `exec_addr2` attempts failed on this device. During testing, the BROM crashed on the first FDL1 data packet when using those older methods, but stayed alive and completed the chain when using `loadexec`.
+
+### Why `loadexec` Matters
+
+The likely practical difference:
+
+* `exec_addr` sends the payload as a raw binary at a manually supplied address.
+* `loadexec` handles payload delivery differently.
+* The filename-based address reduces manual address entry mistakes.
+* On this UMS9230_6h10 target, `loadexec` is the verified working path.
+
+Do not rename the payload unless you know exactly what you are doing.
+
+Wrong names may break the chain.
+
+---
+
+## Step-by-Step: FDL2 Access
+
+From Linux:
+
+```bash
+cd ~/cubot_unlock
+```
+
+Run the verified command:
+
+```bash
+sudo ./spd_dump --verbose 2 --wait 300 loadexec custom_exec_no_verify_65015f08.bin fdl fdl1-dl.bin 0x65000800 fdl fdl2-dl.bin 0x9efffe00 exec
+```
+
+### Phone Steps
+
+1. Power off the phone completely.
+2. Hold **Volume Down**.
+3. While holding Volume Down, plug in USB.
+4. Keep holding until `spd_dump` connects.
+
+Expected signs of success:
+
+```text
+CHECK_BAUD bootrom
+BSL_REP_VER: "SPRD3"
+CMD_CONNECT bootrom
+SEND fdl1-dl.bin to 0x65000800
+EXEC FDL1
+SEND fdl2-dl.bin to 0x9efffe00
+FDL2 >
+```
+
+If you reach:
+
+```text
+FDL2 >
+```
+
+you have FDL2 access.
+
+That is the important part.
+
+---
+
+## Step-by-Step: Bootloader Unlock
+
+At the `FDL2>` prompt, flash the patched bootloader:
+
+```text
+w splloader splloader.bin
+```
+
+Trigger the factory reset:
+
+```text
+w misc misc-wipe.bin
+```
+
+Reboot:
+
+```text
 reset
 ```
 
-**Dangerous step.** After erase, the device will not boot normally until the stock chain is restored. BROM access remains available for recovery.
+The phone should:
 
-### 4.4 Patch splloader
+1. Reboot.
+2. Show recovery / wipe progress.
+3. Boot to the Android setup screen.
+4. Come back with the bootloader unlocked.
 
-```bash
-./gen_spl-unlock -mac splloader.bin
-# mv [output] to appropriate filename
-```
+### Why the Wipe Is Recommended
 
-This prepares the early bootloader stage for the unlock payload.
+`misc-wipe.bin` triggers a factory reset.
 
-### 4.5 Process uboot with chsize
+This removes old Android security state and avoids encryption or boot state mismatch after the bootloader unlock.
 
-```bash
-./chsize -mac uboot.bin
-# mv [output] to appropriate filename
-```
-
-Bootloader files require exact size/alignment. Incorrect size causes no-boot even if content is otherwise valid.
-
-### 4.6 Flash Temporary cboot
-
-```bash
-./spd_dump --wait 300   exec_addr 0x65015f08   fdl fdl1-dl.bin 0x65000800   fdl fdl2-dl.bin 0x9efffe00   exec   w uboot fdl2-cboot.bin   reset
-```
-
-The temporary `cboot` image appears to be part of the Unisoc unlock path, allowing the unlock payload to run where the stock boot chain would block it.
-
-### 4.7 Run Unlock Payload
-
-```bash
-./spd_dump --wait 300   exec_addr 0x65015f08   fdl spl-unlock.bin 0x65000800
-```
-
-**Observed behavior:** After this command, the device disconnected and displayed a black screen. This is likely the **success behavior** — the unlock flag was written before the device dropped.
-
-### 4.8 Apparent Brick → Recovery
-
-If the phone shows a black screen and does not boot, this is a **recoverable soft-brick** (BROM access remains available). Restore the stock boot chain:
-
-```bash
-./spd_dump --wait 300   exec_addr 0x65015f08   fdl fdl1-dl.bin 0x65000800   fdl fdl2-dl.bin 0x9efffe00   exec   w uboot_a lk-sign.bin   w uboot_b lk-sign.bin   w splloader u-boot-spl-16k-ufs-sign.bin   w vbmeta_a vbmeta-sign.img   w vbmeta_b vbmeta-sign.img   w init_boot_a init_boot.img   w init_boot_b init_boot.img   w boot_a boot-gki.img   w boot_b boot-gki.img   reset
-```
-
-> **Correction:** The restored `splloader` file is named `u-boot-spl-16k-ufs-sign.bin` in the stock package, but this device uses **EMMC**. Verify whether an EMMC-equivalent `splloader` should be substituted. In this experimental run, the UFS-named file restored successfully, but this is a documented uncertainty.
-
-After restore, the phone booted and displayed the **unlocked bootloader warning**.
-
-**Likely explanation:** `spl-unlock.bin` wrote the unlock flag successfully, but the temporary boot chain was broken. Restoring stock boot files allowed the stock bootloader to read the already-written unlock flag.
+Skipping the wipe may leave the device unstable or unable to boot cleanly.
 
 ---
 
-## 5. Magisk Root Process
+## Step-by-Step: Magisk Root
 
-### 5.1 Patch vbmeta (Disable Verified Boot)
+After bootloader unlock and initial Android setup, install Magisk.
 
-Set bytes at offset `0x78–0x7C` to `0x02000000` to disable Android Verified Boot (AVB) checks.
+### Method A: Direct Install
 
-You can use a hex editor or:
+This is the easiest method if Magisk supports it after unlock.
+
+1. Install the Magisk APK.
+2. Open Magisk.
+3. Choose **Install**.
+4. Choose **Direct Install**.
+5. Reboot.
+6. Verify root.
+
+Verify with:
+
 ```bash
-# Example with dd / xxd — adjust to your preferred method
+adb shell su -c "id"
 ```
 
-### 5.2 Flash Patched vbmeta to Both Slots
+Expected result:
 
-```bash
-w vbmeta_a /path/to/vbmeta-sign-patched.img
-w vbmeta_b /path/to/vbmeta-sign-patched.img
+```text
+uid=0(root)
 ```
 
-### 5.3 Patch init_boot.img with Magisk
+### Method B: Patch Boot Image Through FDL2
 
-1. Copy stock `init_boot.img` to the phone or use Magisk app on-device
-2. Magisk app → **Install** → **Select and Patch a File**
-3. Select `init_boot.img`
-4. Output will be similar to: `magisk_patched-30700_6PawC.img`
+If Direct Install does not work, patch and flash manually.
 
-> **Critical:** On this device, `init_boot.img` is the correct Magisk patch target. Patching `boot-gki.img` will not produce root and may cause boot failure.
+At the `FDL2>` prompt:
 
-### 5.4 Flash Patched init_boot to Both Slots
+```text
+r boot_a
+```
+
+Copy the dumped image to the phone:
 
 ```bash
-w init_boot_a /path/to/magisk_patched.img
-w init_boot_b /path/to/magisk_patched.img
+adb push boot_a.bin /sdcard/Download/
+```
+
+Patch it in Magisk:
+
+```text
+Magisk → Install → Select and Patch a File → boot_a.bin
+```
+
+Pull the patched file back:
+
+```bash
+adb pull /sdcard/Download/magisk_patched-*.img
+```
+
+Boot into FDL2 again and flash:
+
+```text
+w boot_a magisk_patched.img
+```
+
+Reboot:
+
+```text
 reset
 ```
 
-### 5.5 Verify Root
+### Method C: Fastboot
+
+If fastboot works after unlock:
 
 ```bash
-adb shell su -c 'id'
+adb reboot bootloader
 ```
 
-**Expected result:**
+Then:
+
+```bash
+fastboot flash boot_a magisk_patched.img
 ```
-id=0(root) gid=0(root) groups=0(root) context=u:r:magisk:s0
+
+Then:
+
+```bash
+fastboot reboot
+```
+
+If fastboot commands are not implemented on your build, use FDL2 instead.
+
+---
+
+## Step-by-Step: NetHunter Install
+
+After Magisk root works:
+
+1. Download NetHunter from:
+
+```text
+https://store.nethunter.com/
+```
+
+2. Install the NetHunter app.
+3. Open NetHunter.
+4. Grant root access in Magisk.
+5. Open Kali Chroot Manager.
+6. Install Kali Chroot.
+7. Choose Minimal or Full.
+8. Wait for installation.
+
+Minimal chroot generally needs around:
+
+```text
+2GB+
+```
+
+Full chroot may need around:
+
+```text
+4GB-5GB+
+```
+
+### Manual NetHunter Chroot Install
+
+If the in-app download fails, download the rootfs manually:
+
+```bash
+wget https://kali.download/nethunter-images/current/rootfs/kalifs-arm64-minimal.tar.xz
+```
+
+Push it to the phone:
+
+```bash
+adb push kalifs-arm64-minimal.tar.xz /sdcard/
+```
+
+Then in NetHunter:
+
+```text
+Kali Chroot Manager → Install from SDCard
+```
+
+Select the `.tar.xz` file.
+
+---
+
+## The WiFi Reality
+
+The built-in WiFi does **not** support monitor mode.
+
+This is not a simple kernel config issue.
+
+The device uses the proprietary Unisoc WiFi driver:
+
+```text
+sprd_wlan_combo
+```
+
+Observed behavior:
+
+* `wlan0` supports normal WiFi client mode.
+* `wlan0` supports AP mode.
+* `wlan0` supports P2P mode.
+* `wlan0` does not expose monitor mode.
+* Packet injection does not work on built-in WiFi.
+* This is a driver limitation.
+
+For monitor mode and injection, use an external USB WiFi adapter.
+
+Recommended adapters:
+
+```text
+Alfa AWUS036ACH
+TP-Link TL-WN722N v1
+```
+
+Expected NetHunter path:
+
+```text
+External adapter → USB-C OTG → wlan1 or wlan2 → monitor mode
+```
+
+Example:
+
+```bash
+airmon-ng start wlan1
+```
+
+A custom kernel may still be useful for other things, but it will not magically make the proprietary `sprd_wlan_combo` driver expose monitor mode. The bottleneck is the driver stack, not just the kernel config.
+
+---
+
+## Troubleshooting
+
+### `LIBUSB_ERROR_TIMEOUT`
+
+Possible causes:
+
+* Phone is not fully in BROM mode.
+* Wrong timing.
+* Bad USB cable.
+* macOS libusb instability.
+
+Fix:
+
+* Use Linux.
+* Power off completely.
+* Hold Volume Down before plugging USB.
+* Keep holding until connection starts.
+* Try another USB cable or USB port.
+
+---
+
+### `LIBUSB_ERROR_IO` on FDL1 Packet
+
+Likely cause:
+
+```text
+You are using exec_addr or exec_addr2.
+```
+
+Fix:
+
+```text
+Use loadexec only.
+```
+
+Correct command:
+
+```bash
+sudo ./spd_dump --verbose 2 --wait 300 loadexec custom_exec_no_verify_65015f08.bin fdl fdl1-dl.bin 0x65000800 fdl fdl2-dl.bin 0x9efffe00 exec
 ```
 
 ---
 
-## 6. Evidence & Findings
+### `wrong command or wrong mode detected`
 
-| Evidence | Observation |
-|----------|-------------|
-| Boot Warning | `LOCK FLAG IS :UNLOCK!!!` displayed during boot |
-| Skip Verify | `SKIP VERIFY` visible on boot screen |
-| Developer Options | `Bootloader is already unlocked` reported |
-| Build Number | `CUBOT_KINGKONG_ES_3_F071_V16_20260309` |
-| Magisk Root | `adb shell su -c 'id'` returns `uid=0(root)` |
-| NetHunter/Kali | Kali NetHunter Lite environment installed and booting post-root |
+Likely cause:
 
----
+```text
+BROM crashed.
+```
 
-## 7. Troubleshooting Matrix
+Fix:
 
-| Symptom | Likely Cause | Action |
-|---------|--------------|--------|
-| `LIBUSB_ERROR_TIMEOUT` | Device resetting or changing modes | Wait, reconnect, retry BROM entry |
-| `CHECK_BAUD FAIL` | Timing or connection issue | Retry BROM connection, check cable |
-| `FDL2: file does not exist` | Path issue | Use full quoted paths to all `.bin` files |
-| Fastboot unlock fails | Command not implemented on this device | Use BROM/FDL path exclusively |
-| Black screen after unlock payload | Temporary boot chain broken, not hard-brick | Restore stock boot chain via FDL (§4.8) |
-| "No valid OS found" after patched image | AVB still active or boot chain invalid | Unlock first, then patch `vbmeta`, then flash `init_boot` |
-| `exec_addr` fails | SPL/FDL mismatch or unpatched loader | Use patched `splloader.bin` or `custom_exec_no_verify` file |
+1. Unplug USB.
+2. Hold Power + Volume Up for around 10 seconds.
+3. Wait around 10 seconds.
+4. Try BROM entry again.
 
 ---
 
-## 8. Confidence Assessment
+### `FDL2: incompatible partition`
 
-| Claim | Confidence | Notes |
-|-------|------------|-------|
-| Device can be bootloader unlocked | **High** | Successfully achieved and verified |
-| Device can be rooted with Magisk | **High** | `init_boot` patch + vbmeta disable confirmed working |
-| `spl-unlock.bin` was the actual unlock trigger | **Medium-High** | Most likely, but not 100% isolated from other variables |
-| Exact minimal unlock sequence is known | **Low** | Requires repeat testing from stock on identical build |
-| Ready as a guaranteed public beginner guide | **No** | Repeat testing and minimal-step refinement needed first |
+This may be non-fatal.
 
----
+If FDL2 still loads and you get:
 
-## 9. Recommended Next Steps
+```text
+FDL2 >
+```
 
-Before treating this as a reproducible public guide:
-
-1. **Repeat the unlock** from clean stock firmware on the same build or an identical device.
-2. **Identify the minimal required steps** — remove unnecessary recovery panic and redundant flashes.
-3. **Verify the correct EMMC `splloader` filename** vs. the UFS-named stock file used during restoration.
-4. **Document the exact `exec_addr` fix** — the relationship between patched `splloader` and successful `exec_addr` execution needs clarification.
-5. **Test slot consistency** — confirm A/B slot behavior after OTA updates when rooted.
+continue carefully.
 
 ---
 
-## 10. Credits
+### Phone Will Not Enter BROM
 
-- **TomKing062** — Unisoc research tools (`spd_dump`, `gen_spl-unlock`, `chsize`) and CVE-2022-38694 unlock research
-- **topjohnwu** — Magisk
-- **Hovatek Forum** — Previous Unisoc bootloader and AVB research
-- **Cubot** — For shipping a device that appears to be unlockable (intentionally or not)
-- **Kimi AI** — Troubleshooting, reconstruction, and corrections
-- **Original Tester:** m3t4l|>unx
+Try:
 
+```text
+Volume Down
+```
+
+If that fails:
+
+```text
+Volume Up
+```
+
+If that fails:
+
+```text
+Volume Up + Volume Down
+```
+
+Also check:
+
+* Battery charge
+* USB cable
+* USB port
+* Whether the phone is fully powered off
 
 ---
 
-## 11. Session Corrections (vs. Original Draft)
+### Magisk Direct Install Fails
 
-This report incorporates the following factual corrections identified during review:
+Try the manual patch method.
 
-| Correction | Original Error | Fix Applied |
-|------------|----------------|-------------|
-| Storage type | Listed as UFS | Confirmed **EMMC** |
-| Host environment | Not specified | Documented as **macOS Monterey + Kali Pi4** |
-| `exec_addr` behavior | Implied immediate success | Noted that `exec_addr` **failed initially** and required patched `splloader`/`uboot_bak` |
-| `splloader` source | Unclear which file was patched | Clarified that **patched `splloader.bin`** from prior session was used with `gen_spl-unlock` |
-| `lk-sign.bin` target | Suggested as viable | Confirmed **output size mismatch** — not correct target for this SoC |
-| `boot-gki.img` | Suggested as Magisk target | Confirmed **wrong target** — use `init_boot.img` instead |
+Basic flow:
+
+```text
+Dump boot_a → patch with Magisk → flash patched image through FDL2
+```
 
 ---
 
-*Document Status: Corrected Edition — June 2026*  
-*Original Report: March 2026*  
-*License: Use at your own risk. No warranty expressed or implied.*
+### NetHunter Chroot Download Fails
+
+Check:
+
+* Free space on `/data`
+* Root access granted in Magisk
+* Network connection
+* NetHunter app permissions
+
+Fallback:
+
+```text
+Use manual install from tar.xz
+```
+
+---
+
+### No Monitor Mode on `wlan0`
+
+Expected.
+
+Use an external USB WiFi adapter.
+
+---
+
+## Files Reference
+
+Example unlock folder:
+
+```text
+~/cubot_unlock/
+├── custom_exec_no_verify_65015f08.bin
+├── fdl1-dl.bin
+├── fdl2-dl.bin
+├── spd_dump
+├── splloader.bin
+├── misc-wipe.bin
+├── uboot.bin
+├── uboot_bak.bin
+└── splloader_og.bin
+```
+
+Observed partition notes from live testing:
+
+```text
+boot_a / boot_b: 64MB each
+vendor_boot_a / vendor_boot_b: 100MB each
+dtb_a / dtb_b: 8MB each
+init_boot_a / init_boot_b: 8MB each
+super: 5600MB
+userdata: ~237151MB
+storage type: UFS
+total partitions: 74
+```
+
+---
+
+## Verified Working Commands
+
+### FDL2 Access
+
+```bash
+sudo ./spd_dump --verbose 2 --wait 300 loadexec custom_exec_no_verify_65015f08.bin fdl fdl1-dl.bin 0x65000800 fdl fdl2-dl.bin 0x9efffe00 exec
+```
+
+### Bootloader Unlock
+
+```text
+w splloader splloader.bin
+w misc misc-wipe.bin
+reset
+```
+
+### Backup Commands
+
+```text
+r boot_a
+r boot_b
+r dtb_a
+r vendor_boot_a
+```
+
+### Flash Magisk Patched Boot
+
+```text
+w boot_a magisk_patched.img
+reset
+```
+
+### Utility Commands
+
+```text
+p
+reboot-recovery
+reboot-fastboot
+poweroff
+timeout 30000
+blk_size 65535
+rawdata 1
+```
+
+---
+
+## Changelog
+
+| Date       | Change                                                |
+| ---------- | ----------------------------------------------------- |
+| 2026-06-23 | Initial testing and failed `exec_addr` variants       |
+| 2026-06-24 | Moved to Kali Linux                                   |
+| 2026-06-24 | Confirmed `loadexec` as the working method            |
+| 2026-06-24 | Verified FDL2 access                                  |
+| 2026-06-24 | Verified bootloader unlock                            |
+| 2026-06-24 | Verified Magisk root                                  |
+| 2026-06-24 | Confirmed UFS storage                                 |
+| 2026-06-24 | Confirmed built-in WiFi does not support monitor mode |
+| 2026-06-24 | Clean guide prepared                                  |
+
+---
+
+## Credits
+
+* **TomKing062** — Unisoc research tools and `spreadtrum_flash`
+* **topjohnwu** — Magisk
+* **Kali NetHunter Project** — NetHunter platform
+* **Hovatek Forum** — Unisoc bootloader and AVB research
+* **Kimi AI** — Troubleshooting, reconstruction, and corrections
+* **Original Tester / Maintainer:** Miguel Portugal / KiMiGuel
+
+---
+
+## Disclaimer
+
+This guide is provided for research, repair, recovery, and owner-controlled device modification.
+
+No warranty is provided.
+
+You are responsible for any damage, data loss, boot failure, or device brick.
+
+Use stock firmware from your own device whenever possible.
+
+Do not flash random bootloader files across different models.
+
+---
+
+## Final Verified Status
+
+```text
+Device: Cubot KingKong ES 3
+SoC: Unisoc T615 / UMS9230_6h10
+Build: CUBOT_KINGKONG_ES_3_F071_V16_20260309
+Storage: UFS
+FDL2: Confirmed
+Bootloader: Unlocked
+Magisk root: Confirmed
+NetHunter: Installable
+WiFi injection: External USB adapter required
+```
+
+---
+
+*Last Updated: 2026-06-24*
