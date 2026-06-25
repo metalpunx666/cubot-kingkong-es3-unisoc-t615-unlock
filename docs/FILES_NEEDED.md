@@ -1,0 +1,6 @@
+- Required files
+- Optional backup files
+- Where to place files
+- What each file does
+- Why not to use files from another phone
+- Expected folder layout
